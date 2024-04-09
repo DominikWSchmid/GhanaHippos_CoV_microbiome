@@ -14,9 +14,9 @@ Links to other publicly accessible locations of the data:
 
 [http://...](https://doi.org/10.5061/dryad.sxksn039t)
 
-# NCBI accession numbers of raw microbiota fasta files are:
+NCBI accession numbers of raw microbiota fasta files are:
 
-
+Bioproject-PRJNA1096136
 
 # Code/Software
 
