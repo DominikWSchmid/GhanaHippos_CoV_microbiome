@@ -1,0 +1,407 @@
+
+```{r}
+
+#### read phyloseq object into R ####
+ps = readRDS("~/Dropbox (Personal)/Ghana/03_Microbiome/R/working_data/LinD_unfiltered.rds")
+
+#### 240 sample including 9 extraction blanks and 10 negative controls ####
+
+```
+
+
+### pruning & filtering steps
+
+supervised filtering
+
+```{r}
+
+### filter taxa that are not bacteria, not assigned at phylum level, are mitochondria or chloroplasts ####
+
+ps_filt <- ps %>%                    # take the object 'ps
+         phyloseq::subset_taxa(      # and subset it to the following instructions:
+         Domain == "Bacteria"&      # keep only taxa classified as Bacteria
+         Phylum != "NA" &            # exclude samples that are not identified at Phylum level
+         Family != "Mitochondria" &  # Exclude Mitochondria
+         Class != "Chloroplast" &    # Exclude Chloroplasts
+         Order != "Chloroplast")
+
+### remove some taxonomic assignments that simply cannot be ####
+
+ASVs_to_exclude<- subset_taxa(ps_filt, 
+                              Species =="Gryllus_firmus" |
+                                Species == "Heliconius_cydno" | 
+                                Species == "Heliconius_melpomene" |
+                                Species == "Blattella_germanica" |
+                                Species == "Coptotermes_gestroi") ### 
+
+#### use the pop_taxa_function #### 
+####https://github.com/joey711/phyloseq/issues/652#####
+
+source("~/Dropbox (Personal)/Ghana/03_Microbiome/R/working_data/Pop_taxa_function.R")
+
+ps_filt<-pop_taxa(ps_filt, taxa_names(ASVs_to_exclude)) #uses a list of ASV identified and removes them from the filtered data
+
+
+```
+
+### relative abundance and prevalence
+
+```{r}
+
+#### remove rare ASVs that have under 10 reads #### 
+ps_filt <- subset_taxa(ps_filt, taxa_sums(ps_filt)>=10) #this removes a big chunk
+
+### then we ...
+### compute prevalence of each feature, store as data.frame
+
+prevelancedf = apply(X = otu_table(ps_filt),
+                 MARGIN = 1,
+                 FUN = function(x){sum(x > 0)})
+
+prevelancedf = data.frame(Prevalence = prevelancedf, #prev is number of samples with ASV present
+                      TotalAbundance = taxa_sums(ps_filt), #total abundance is number of reads across samples
+                      tax_table(ps_filt))
+prevelancedf[1:20,]
+
+### based on this its pretty clear that there will be things to remove ###
+
+```
+
+### unsupervised filtering based on prevalence and abundance 
+
+```{r}
+
+plyr::ddply(prevelancedf, "Phylum", function(df1){
+  data.frame(mean_prevalence=mean(df1$Prevalence),total_abundance=sum(df1$TotalAbundance,na.rm = T),stringsAsFactors = F)
+  })  ### no straight forward phylum to remove based on this
+
+
+prevelancedf1 = subset(prevelancedf, Phylum %in% get_taxa_unique(ps_filt, taxonomic.rank = "Phylum"))
+
+ggplot(prevelancedf1, aes(TotalAbundance, Prevalence / nsamples(ps_filt),color=Phylum)) +
+  # Include a guess for parameter
+  geom_hline(yintercept = 0.0005, alpha = 0.5, linetype = 2) + geom_point(size = 2, alpha = 0.7) +
+  scale_x_log10() +  xlab("Total Abundance") + ylab("Prevalence [Frac. Samples]") +
+  facet_wrap(~Phylum) + theme(legend.position="none")
+
+### keep samples with 0.1% prevalence (i.e. in at least 6 samples)
+
+#### how many ASVs were filtered out so far??
+
+length(taxa_names(ps)) - length(taxa_names(ps_filt)) 
+
+# use the function paste() to generate handy sentences if you want:
+
+paste("This step filtered out", length(taxa_names(ps)) - length(taxa_names(ps_filt)), "ASVs. There are",  length(taxa_names(ps_filt)), "ASVs remaining", sep = " ")
+paste("Filtering removed", 100 - length(taxa_names(ps_filt))/length(taxa_names(ps)) *100, "% of ASVs",  sep = " ")
+
+```
+
+### relative abundance
+
+```{r}
+
+#get relative abundance
+ps_genus<-tax_glom(ps_filt, taxrank="Genus") # agglomerate taxa to Genus level (all taxa that belong to same genus become one ASV)
+
+# change to compositional format (ie relative abundance)
+ps_genus_comp<-transform(ps_genus, transform = "compositional") 
+
+composition_genus_df<-psmelt(ps_genus_comp) #psmelt() 'melts' all information in a phyloseq object into a long dataframe
+
+
+## Now to calculate mean relative abundance per genus
+genus_summary<-composition_genus_df %>% ## take the data frame 'composition_df"
+   group_by(Genus) %>% # group it by genus
+   summarize(Relative_abundance = round(mean(Abundance), 3)) %>% # calculate mean abundance per family, round to 3 decimal points
+   arrange( desc(Relative_abundance)) # arrange in descending order
+
+DT::datatable(genus_summary)
+
+
+## Next we will generate a scatter plot of the most abundant ASVs
+### which ASVs are the most abundant?
+### which ASVs are the most prevalent (present in the most samples)?
+#### we need to make a dataframe containing the relevant information
+
+#### use Prevalence function #####
+source("~/Dropbox (Personal)/Ghana/03_Microbiome/R/working_data/Prevalence_function.R")
+
+prevalence_df<-prevalence(ps_genus_comp) # This function summarizes prevalence, abundance, and axonomy of all ASVs. It generates a table with one row per ASV.
+
+prevalence_df$Prevalence <-prevalence_df$Prevalence/240 #change prevalence to a percentage(number of samples found in divided by total number of samples)
+
+names(prevalence_df)[3]<- "Relative_abundance" # change name of third column
+
+ggplot(prevalence_df, aes(x = Prevalence, y = Relative_abundance, fill = Phylum, label = Genus))+ # fill colour by Phylum, add text labesl 
+   geom_point( pch = 21, alpha = 0.7,size = 3)+ # size by abundance, make slightly transparent (alpha = 0.7)
+   scale_size(range=c(3,8))+ # set limits to the point size (between 3 and 8) so that points aren't too small
+   geom_text_repel( data= subset(prevalence_df, Relative_abundance > 0.03 | Prevalence > 0.8))+ # add Family labels to ASVs with relative abundance over 3% or prevalence over 80%
+   theme_bw(base_size = 16)#+ theme(legend.position = "none")
+ # makes background white, and base_size increases text size
+
+```
+
+# Percentage summary
+
+```{r}
+
+#### use summarise taxa function ####
+source("~/Dropbox (Personal)/Ghana/03_Microbiome/R/working_data/Summarise_taxa_function.R")
+
+summarize_taxa(ps_filt, "Phylum")
+
+```
+
+#more filter steps
+
+we could remove everything thats less frequent than 1%
+
+```{r}
+##### Specify phyla to filter <0.3
+
+filterPhyla_abundance = c("10bav-F6", 
+                "Acidobacteriota", #particularly common in soil (but also caves)
+                "Bdellovibrionota", #parasitic forms
+                "Chloroflexi", #aerobic thermophiles, but can also photosynthesise 
+                "Cyanobacteria", #photosynthetic bacteria durrrr!
+                "Deferribacterota", # anaerobic respirator/fermentation
+                "Deinococcota", #extremophiles
+                "Desulfobacterota", 
+                "Elusimicrobiota", #widespread in marine to soil habitats
+                "FW113", #unknown metabolic function
+                "Fibrobacterota", #rumen bacteria; degrade cellulose
+                "Methylomirabilota", #first organisms to use methaneoxidation (super cool!!!) #- a novel way to chemically produce O2
+                "Myxococcota", #predatory soil bacteria with social traits
+                "Nitrospirota", #complete ammonia oxidation
+                "Patescibacteria", #groundwater associated bacteria
+                "Planctomycetota", #sponges and microalgae associated phylum
+                "Rs-K70_termite_group", # associated with termite guts
+                "Spirochaetota", # pathogenic potential; associated with periodontal disease (???)
+                "WPS-2", #dry, bare soil environment
+                "Verrucomicrobiota")#, #freshwater but also host associated (???)
+
+# Filter entries with unidentified Phylum
+ps_filt <- subset_taxa(ps_filt, !Phylum %in% filterPhyla_abundance)
+
+
+```
+
+#decontamination
+
+```{r}
+
+#quick first look at the library sizes in each sample
+#create control or sample variable and assign 
+
+df<-as.data.frame(sample_data(ps_filt))
+
+df$LibrarySize <- sample_sums(ps_filt)
+
+df <- df[order(df$LibrarySize),]
+
+df$Index <- seq(nrow(df))
+
+ggplot(data=df, aes(x=Index, y=LibrarySize, color=Lineage, shape=Lineage)) + geom_point(size=4)+geom_hline(yintercept=5000, linetype="dashed", color = "black")+ scale_shape_manual(values=c(20, 21, 21, 21))
+
+
+```
+
+###Decontam package for decontamination
+
+```{r}
+#First decontam step - remove taxa found in extraction blanks
+#Since we dont have concentrations for input DNA we cant use frequency method to determine contamination, but we can use the prevalence method instead. 
+#In this method, the prevalence (presence/absence across samples) of each sequence feature in true positive samples is compared to the prevalence in negative controls to identify contaminants.
+
+ExB<-subset_samples(ps_filt, Lineage =="ExB")
+NegCont<-subset_samples(ps_filt, Lineage =="NegCont")
+new.ps<-subset_samples(ps_filt, Lineage =="D")
+new.ps.ExB <- merge_phyloseq(new.ps, ExB)
+
+sample_data(new.ps.ExB)$is.neg <- sample_data(new.ps.ExB)$Lineage == "ExB"
+
+contamdf.prev <- isContaminant(new.ps.ExB, method="prevalence", neg="is.neg", threshold = 0.1) #0.5 is more conservative; 0.1 as less conservative alternative
+
+table(contamdf.prev$contaminant)               
+#at 0.1
+#False  #True
+#4687   #165 (-2 common ones)
+
+(163/(4687+163))*100
+
+# Make phyloseq object of presence-absence in negative controls and true samples
+ps.pa <- transform_sample_counts(new.ps.ExB, function(abund) 1*(abund>0))
+
+ps.pa.neg <- prune_samples(sample_data(ps.pa)$Lineage == "ExB", ps.pa)
+ps.pa.pos <- prune_samples(sample_data(ps.pa)$Lineage == "D", ps.pa)
+
+# Make data.frame of prevalence in positive and negative samples
+df.pa <- data.frame(names=taxa_names(ps.pa.pos),
+                    pa.pos=taxa_sums(ps.pa.pos), 
+                    pa.neg=taxa_sums(ps.pa.neg),
+                      contaminant=contamdf.prev$contaminant)
+
+df.pa[(which(df.pa$pa.pos>=100)),4]<-FALSE
+
+ggplot(data=df.pa, aes(x=pa.neg, y=pa.pos, color=contaminant)) + geom_point() +
+  xlab("Prevalence (Extraction Blanks)") + ylab("Prevalence (True Samples)")
+
+
+###### now the same for NegCont #####
+
+new.ps.NegCont <- merge_phyloseq(new.ps, NegCont)
+
+sample_data(new.ps.NegCont)$is.neg <- sample_data(new.ps.NegCont)$Lineage == "NegCont"
+
+contamdf.prev <- isContaminant(new.ps.NegCont, method="prevalence", neg="is.neg", threshold = 0.1) #0.5 is more conservative; 0.1 as less conservative alternative
+
+table(contamdf.prev$contaminant) 
+#at 0.1
+#False  #True
+#4681   #171 (-6 common ones)
+
+(165/(4681+165))*100
+
+
+# Make phyloseq object of presence-absence in negative controls and true samples
+ps.pa.con <- transform_sample_counts(new.ps.NegCont, function(abund) 1*(abund>0))
+
+ps.pa.con.neg <- prune_samples(sample_data(ps.pa.con)$Lineage == "NegCont", ps.pa.con)
+ps.pa.con.pos <- prune_samples(sample_data(ps.pa.con)$Lineage == "D", ps.pa.con)
+
+
+# Make data.frame of prevalence in positive and negative samples
+con.df.pa <- data.frame(names=taxa_names(ps.pa.con.pos),
+                    pa.pos=taxa_sums(ps.pa.con.pos), 
+                    pa.neg=taxa_sums(ps.pa.con.neg),
+                      contaminant=contamdf.prev$contaminant)
+
+con.df.pa[(which(con.df.pa$pa.pos>=100)),4]<-FALSE
+
+ggplot(data=con.df.pa, aes(x=pa.neg, y=pa.pos, color=contaminant)) + geom_point() +
+  xlab("Prevalence (Negative Controls)") + ylab("Prevalence (True Samples)")
+
+con.df.pa[(which(con.df.pa$pa.pos>=100)),4]<-FALSE
+
+### now lets remove the likely contamination... 
+pop_taxa = function(physeq, badTaxa){
+  allTaxa = taxa_names(physeq)
+  myTaxa <- allTaxa[!(allTaxa %in% badTaxa)]
+  return(prune_taxa(myTaxa, physeq))
+}
+
+contaminated_seq1<-subset(df.pa, contaminant=="TRUE")
+contaminated_seq2<-subset(con.df.pa, contaminant=="TRUE")
+contaminated_seq<-rbind(contaminated_seq1,contaminated_seq2)
+contaminated<-contaminated_seq$names
+
+# 327 taxa were identified as contaminants from neg controls and extraction blanks together
+
+
+ps_decontam<-pop_taxa(ps_filt, contaminated) #removes contaminated OTUs from ps
+#new.ps<-merge_phyloseq(decontam.ps, Zymo) #add Zymo back in?
+
+#### how many ASVs were filtered out during this step??
+
+paste("Decontamination filtered out", length(taxa_names(ps_filt)) - length(taxa_names(ps_decontam)), "ASVs. There are",  length(taxa_names(ps_decontam)), "ASVs remaining", sep = " ")
+paste("Filtering removed", 100 - length(taxa_names(ps_decontam))/length(taxa_names(ps_filt)) *100, "% of ASVs",  sep = " ")
+
+```
+
+### now we check read depth of each sample and remove those with low reads
+
+```{r}
+
+### do we remove samples with poor read count after decontamination and filtering? Yes!
+
+df<-as.data.frame(sample_data(ps_decontam))
+
+df$LibrarySize <- sample_sums(ps_decontam)
+
+df <- df[order(df$LibrarySize),]
+
+df$Index <- seq(nrow(df))
+
+ggplot(data = df, aes(x = LibrarySize)) + geom_histogram( col = "grey") 
+
+# a conservative limit at 5000 reads
+
+ggplot(data=df, aes(x=Index, y=LibrarySize, color=Lineage, shape=Lineage)) + geom_point(size=4)+geom_hline(yintercept=5000, linetype="dashed", color = "black")+ scale_shape_manual(values=c(20, 21, 21, 21))
+
+
+#### 
+
+View(df[,c(1,216:219)])
+
+#### based on an 5000 read threshold we would only remove 2 real samples 
+lowReads<-c( "DE56NGSUKBD122830-BUO2-B-F221",                    
+   "DE02NGSUKBD119146-KW2-E-F121")
+ 
+ 
+ps_lowReads<-subset_samples(ps_decontam, !(sample.ID %in% lowReads))
+
+#### plus remove all extraction blanks and PCR blanks
+ps_lowReads<-subset_samples(ps_lowReads, Lineage !="ExB")  # 10 extrac blanks
+ps_lowReads<-subset_samples(ps_lowReads, Lineage !="NegCont") # 9 pcr blanks
+
+```
+
+Rarefaction curve 
+
+```{r}
+## But how do you decide whether a sample's lib size is insufficient?
+
+# plot rarfaction curves
+# rarefaction curves show how many ASVs are detected (y axis) when you randomly subsample more and more reads from the sample (x axis)
+# the appropriate threshold for rarefying is therefore after the curve has flattened
+# as this indicates that increasing the read depth past this point will not significantly add many more ASVs to the sample
+# and add line to min reads
+min(sample_sums(ps_lowReads)) 
+
+tab<-phyloseq::otu_table(ps_lowReads)
+class(tab) <- "matrix"
+tab<-t(tab)
+vegan::rarecurve(tab, step = 20,  col = "black", cex = 0.6, main = "Rarefaction curve", label=F)
+### add line at min
+abline(v=8815, col="red", lwd=2, lty=2)
+```
+
+
+### build final RDS file
+
+```{r}
+
+saveRDS(ps_lowReads, "~/Dropbox (Personal)/Ghana/03_Microbiome/R/working_data/filtered_219samples.rds")
+
+```
+
+zymo results
+
+```{r}
+
+top<-as_tibble(get_group_abundances(zymo.genus, level="Genus", group="Genus", transform = "compositional") %>%arrange (-mean_abundance))
+print(top,n=15)
+
+zymo.genus<-tax_glom(Zymo, taxrank="Genus")
+
+otu_table(zymo.genus)
+zymo.genus.filt <- subset_taxa(zymo.genus, taxa_sums(zymo.genus)>0) 
+
+zymo.rel <- microbiome::transform(zymo.genus.filt, "compositional")
+
+tax_table(zymo.rel)
+
+
+
+p.fam <- plot_composition(zymo.rel, sample.sort = NULL,
+                          otu.sort = NULL,
+                          plot.type = "barplot",
+                          verbose = FALSE) +
+  xlab("Zymo samples") +
+  theme_bw() + 
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x=element_blank()) +
+  scale_y_continuous(labels = scales::percent)
+
+```
