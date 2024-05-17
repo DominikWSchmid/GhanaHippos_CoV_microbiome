@@ -1,6 +1,6 @@
 # Hibecovirus (genus Betacoronavirus) infection linked to gut microbial dysbiosis in bats
 
-We included here all primary 16S and meta data collected to arrive at the conclusions from the above mentioned manuscript. The fecal samples were collected from cave-roosting bats in Ghana over two years  between 2010 and 2012 (see methods for details). The fecal samples were used for viral and 16S microbiota screening. We found that infections with one SARS-related beta-CoV altered the gut microbial composition of its bat host and did so in a way that more intensely infected bats suffered a more heavily dysbiotic microbial configuration. 
+We included here all primary 16S and meta data collected to arrive at the conclusions from the above mentioned manuscript. The fecal samples were collected from cave-roosting bats in Ghana over two years  between 2010 and 2012 (see methods for details). The fecal samples were used for viral and 16S microbiota screening. We found that infections with one distantly SARS-related hibecovirus altered the gut microbial composition of its bat host and did so in a way that more intensely infected bats suffered a more heavily dysbiotic microbial configuration. 
 
 # Description of the data and file structure
 
